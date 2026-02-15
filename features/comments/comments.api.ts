@@ -1,35 +1,16 @@
-import { api } from "../../src/lib/api";
+import { api } from "../../lib/api";
 
-/* ---------- Types ---------- */
-
-export type Comment = {
-  id: number;
-  body: string;
-  createdAt: string;
-  user: {
-    id: number;
-    firstName: string;
-  };
-};
-
-/* ---------- Fetch comments ---------- */
-
-export async function fetchComments(postId: number): Promise<Comment[]> {
+export async function fetchComments(postId: string) {
   const res = await api.get(`/posts/${postId}/comments`);
   return res.data;
 }
 
-/* ---------- Create comment ---------- */
-
-export async function createComment(postId: number, body: string) {
-  return api.post(`/posts/${postId}/comments`, { body });
+export async function createComment(postId: string, content: string) {
+  const res = await api.post(`/posts/${postId}/comments`, { content });
+  return res.data;
 }
 
-/* ---------- Delete comment ---------- */
-
-export async function deleteComment(
-  postId: number,
-  commentId: number,
-): Promise<void> {
-  await api.delete(`/posts/${postId}/comments/${commentId}`);
+export async function deleteComment(commentId: string) {
+  const res = await api.patch(`/posts/comments/${commentId}/delete`);
+  return res.data;
 }

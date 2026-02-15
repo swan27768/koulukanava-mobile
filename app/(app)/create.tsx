@@ -1,85 +1,89 @@
-import { View, Text, TextInput, Pressable, Alert } from "react-native";
-import { useState } from "react";
 import { useRouter } from "expo-router";
-import { createPost } from "../../src/api/posts";
+import { useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { api } from "../../src/lib/api";
 
 export default function CreatePost() {
   const router = useRouter();
 
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
+  const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async () => {
-    if (!title || !body) {
-      Alert.alert("Täytä kaikki kentät");
+  async function handleSubmit() {
+    if (!content.trim()) {
+      Alert.alert("Virhe", "Kirjoita viesti");
       return;
     }
 
-    setLoading(true);
     try {
-      await createPost({
-        title,
-        body,
-        type: "help",
+      setLoading(true);
+
+      // 1️⃣ Hae GENERAL-tiimi
+      const teamsRes = await api.get("/teams");
+      const general = teamsRes.data.find((t: any) => t.isGeneral);
+
+      if (!general) {
+        Alert.alert("Virhe", "GENERAL-tiimiä ei löytynyt");
+        return;
+      }
+
+      // 2️⃣ Julkaise viesti
+      await api.post(`/teams/${general.id}/posts`, {
+        content,
       });
 
-      Alert.alert("Pyyntö luotu");
-      router.replace("/(app)");
-    } catch (err: any) {
-      console.error("CREATE POST ERROR:", err);
-      Alert.alert("Virhe", "Pyynnön luonti epäonnistui");
+      router.back(); // palaa feediin
+    } catch (e) {
+      console.log(e);
+      Alert.alert("Virhe", "Julkaisu epäonnistui");
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   return (
-    <View style={{ flex: 1, padding: 24, backgroundColor: "white" }}>
-      <Text style={{ fontSize: 24, marginBottom: 16 }}>Luo uusi pyyntö</Text>
+    <View style={{ flex: 1, padding: 16 }}>
+      <Text style={{ fontSize: 20, fontWeight: "700", marginBottom: 16 }}>
+        Uusi viesti
+      </Text>
 
       <TextInput
-        placeholder="Otsikko"
-        value={title}
-        onChangeText={setTitle}
-        style={{
-          borderWidth: 1,
-          borderColor: "#ccc",
-          padding: 12,
-          marginBottom: 12,
-          borderRadius: 6,
-        }}
-      />
-
-      <TextInput
-        placeholder="Kuvaus"
-        value={body}
-        onChangeText={setBody}
+        value={content}
+        onChangeText={setContent}
+        placeholder="Kirjoita tiedote..."
         multiline
         style={{
           borderWidth: 1,
-          borderColor: "#ccc",
+          borderColor: "#e5e7eb",
+          borderRadius: 8,
           padding: 12,
-          height: 120,
-          marginBottom: 20,
-          borderRadius: 6,
+          minHeight: 120,
+          marginBottom: 16,
           textAlignVertical: "top",
         }}
       />
 
       <Pressable
         onPress={handleSubmit}
-        disabled={loading}
         style={{
           backgroundColor: "#2563eb",
           paddingVertical: 14,
-          borderRadius: 6,
-          opacity: loading ? 0.6 : 1,
+          borderRadius: 8,
+          alignItems: "center",
         }}
       >
-        <Text style={{ color: "white", textAlign: "center", fontSize: 16 }}>
-          {loading ? "Julkaistaan..." : "Julkaise"}
-        </Text>
+        {loading ? (
+          <ActivityIndicator color="white" />
+        ) : (
+          <Text style={{ color: "white", fontWeight: "600" }}>Julkaise</Text>
+        )}
       </Pressable>
     </View>
   );

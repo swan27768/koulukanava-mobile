@@ -1,89 +1,199 @@
-import {
-  View,
-  Text,
-  FlatList,
-  ActivityIndicator,
-  Pressable,
-  Alert,
-} from "react-native";
-import { useState, useEffect, useCallback } from "react";
+import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
+import React, { useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Pressable,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 
-import { fetchPosts, deletePost, Post } from "../../src/api/posts";
-import { timeAgo } from "../../src/utils/time";
 import { useAuth } from "../../src/auth/AuthContext";
-
-import { CommentInput } from "../../src/components/CommentInput";
-import { CommentList } from "../../src/components/CommentList";
-
-import { createComment } from "../../features/comments/comments.api";
+import { api } from "../../src/lib/api";
 
 export default function Home() {
-  const router = useRouter();
+  const [posts, setPosts] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const { user } = useAuth();
 
-  const [posts, setPosts] = useState<Post[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [initialLoading, setInitialLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const router = useRouter();
 
-  // 🔑 refreshKey PER POST
-  const [commentRefreshKey, setCommentRefreshKey] = useState<
-    Record<number, number>
-  >({});
+  useFocusEffect(
+    React.useCallback(() => {
+      loadInitial();
+    }, []),
+  );
 
-  /** 🔄 Lataa feed alusta */
-  const reloadFeed = useCallback(async () => {
+  async function loadInitial() {
     try {
-      setInitialLoading(true);
-      setCursor(null);
+      setLoading(true);
 
-      const res = await fetchPosts(undefined);
-      setPosts(res.items);
-      setCursor(res.nextCursor);
-    } catch (e) {
-      console.error("RELOAD FEED ERROR:", e);
-    } finally {
-      setInitialLoading(false);
-    }
-  }, []);
+      const teamsRes = await api.get("/teams");
+      const general = teamsRes.data.find((t: any) => t.isGeneral);
+      if (!general) return;
 
-  /** 🔄 Pull-to-refresh */
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await reloadFeed();
-    setRefreshing(false);
-  }, [reloadFeed]);
+      const res = await api.get(`/teams/${general.id}/posts?limit=10`);
 
-  /** 📥 Pagination */
-  const loadMore = useCallback(async () => {
-    if (loading || !cursor) return;
+      const enriched = res.data.items.map((p: any) => ({
+        ...p,
+        comments: [],
+        commentsLoading: true,
+        newComment: "",
+      }));
 
-    setLoading(true);
-    try {
-      const res = await fetchPosts(cursor);
+      setPosts(enriched);
+      setCursor(res.data.nextCursor);
 
-      setPosts((prev) => {
-        const ids = new Set(prev.map((p) => p.id));
-        const newItems = res.items.filter((p) => !ids.has(p.id));
-        return [...prev, ...newItems];
+      enriched.forEach((post: any) => {
+        loadComments(post.id);
       });
-
-      setCursor(res.nextCursor);
     } catch (e) {
-      console.error("FETCH POSTS ERROR:", e);
+      console.log("LOAD ERROR", e);
     } finally {
       setLoading(false);
     }
-  }, [cursor, loading]);
+  }
 
-  /** 🚀 Ensimmäinen lataus */
-  useEffect(() => {
-    reloadFeed();
-  }, [reloadFeed]);
+  async function loadMore() {
+    if (!cursor || loadingMore) return;
 
-  if (initialLoading) {
+    try {
+      setLoadingMore(true);
+
+      const teamsRes = await api.get("/teams");
+      const general = teamsRes.data.find((t: any) => t.isGeneral);
+      if (!general) return;
+
+      const res = await api.get(
+        `/teams/${general.id}/posts?cursor=${cursor}&limit=10`,
+      );
+
+      const enriched = res.data.items.map((p: any) => ({
+        ...p,
+        comments: [],
+        commentsLoading: true,
+        newComment: "",
+      }));
+
+      setPosts((prev) => [...prev, ...enriched]);
+      setCursor(res.data.nextCursor);
+
+      enriched.forEach((post: any) => {
+        loadComments(post.id);
+      });
+    } catch (e) {
+      console.log("LOAD MORE ERROR", e);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  async function loadComments(postId: string) {
+    try {
+      const res = await api.get(`/posts/${postId}/comments`);
+
+      // 🔒 Varmistetaan että comments on aina array
+      const commentsArray = Array.isArray(res.data)
+        ? res.data
+        : (res.data?.items ?? []);
+
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === postId
+            ? { ...p, comments: commentsArray, commentsLoading: false }
+            : p,
+        ),
+      );
+    } catch (e) {
+      console.log("COMMENT LOAD ERROR", e);
+    }
+  }
+
+  async function addComment(postId: string) {
+    const post = posts.find((p) => p.id === postId);
+    if (!post?.newComment.trim()) return;
+
+    try {
+      await api.post(`/posts/${postId}/comments`, {
+        content: post.newComment,
+      });
+
+      setPosts((prev) =>
+        prev.map((p) => (p.id === postId ? { ...p, newComment: "" } : p)),
+      );
+
+      loadComments(postId);
+    } catch (e) {
+      console.log("COMMENT CREATE ERROR", e);
+    }
+  }
+  async function deletePost(postId: string) {
+    Alert.alert(
+      "Poista viesti",
+      "Haluatko varmasti poistaa tämän viestiketjun?",
+      [
+        { text: "Peruuta", style: "cancel" },
+        {
+          text: "Poista",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await api.patch(`/teams/posts/${postId}/delete`);
+
+              setPosts((prev) => prev.filter((p) => p.id !== postId));
+            } catch (e) {
+              console.log("POST DELETE ERROR", e);
+            }
+          },
+        },
+      ],
+    );
+  }
+
+  function confirmDelete(commentId: string, postId: string) {
+    Alert.alert(
+      "Poista kommentti",
+      "Haluatko varmasti poistaa tämän kommentin?",
+      [
+        {
+          text: "Peruuta",
+          style: "cancel",
+        },
+        {
+          text: "Poista",
+          style: "destructive",
+          onPress: () => deleteComment(commentId, postId),
+        },
+      ],
+      { cancelable: true },
+    );
+  }
+
+  async function deleteComment(commentId: string, postId: string) {
+    try {
+      await api.patch(`/posts/comments/${commentId}/delete`);
+
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === postId
+            ? {
+                ...p,
+                comments: p.comments.filter((c: any) => c.id !== commentId),
+              }
+            : p,
+        ),
+      );
+    } catch (e) {
+      console.log("COMMENT DELETE ERROR", e);
+    }
+  }
+
+  if (loading) {
     return (
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
         <ActivityIndicator />
@@ -92,257 +202,147 @@ export default function Home() {
   }
 
   return (
-    <View style={{ flex: 1 }}>
-      {/* ===== HEADER (A3.1) ===== */}
-      <View
+    <View style={{ flex: 1, padding: 16 }}>
+      <Text style={{ fontSize: 22, fontWeight: "700", marginBottom: 16 }}>
+        Koulukanava
+      </Text>
+
+      <Pressable
+        onPress={() => router.push("/(app)/create")}
         style={{
+          backgroundColor: "#2563eb",
+          paddingVertical: 10,
           paddingHorizontal: 16,
-          paddingTop: 16,
-          paddingBottom: 12,
-          backgroundColor: "#f9fafb",
+          borderRadius: 8,
+          marginBottom: 16,
+          alignSelf: "flex-start",
         }}
       >
-        <Text
-          style={{
-            fontSize: 24,
-            fontWeight: "700",
-            marginBottom: 12,
-          }}
-        >
-          Naapuriapu
-        </Text>
+        <Text style={{ color: "white", fontWeight: "600" }}>+ Uusi viesti</Text>
+      </Pressable>
 
-        <View
-          style={{
-            flexDirection: "row",
-            gap: 8,
-          }}
-        >
-          <Pressable
-            onPress={() => router.push("/(app)/create")}
+      <FlatList
+        data={posts}
+        keyExtractor={(item) => item.id}
+        onEndReached={loadMore}
+        onEndReachedThreshold={0.5}
+        ListFooterComponent={
+          loadingMore ? <ActivityIndicator style={{ margin: 16 }} /> : null
+        }
+        renderItem={({ item }) => (
+          <View
             style={{
-              flex: 1,
-              backgroundColor: "#2563eb",
-              paddingVertical: 12,
-              borderRadius: 8,
-            }}
-          >
-            <Text
-              style={{
-                color: "white",
-                textAlign: "center",
-                fontWeight: "600",
-              }}
-            >
-              + Uusi pyyntö
-            </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => router.push("/(app)/profile")}
-            style={{
-              paddingHorizontal: 14,
-              justifyContent: "center",
-              borderRadius: 8,
-              backgroundColor: "#e5e7eb",
-            }}
-          >
-            <Text style={{ fontSize: 18 }}>👤</Text>
-          </Pressable>
-        </View>
-      </View>
-      {/* ===== HEADER END ===== */}
-
-      {posts.length === 0 ? (
-        <View
-          style={{
-            flex: 1,
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 32,
-          }}
-        >
-          <Text
-            style={{
-              fontSize: 20,
-              fontWeight: "700",
-              textAlign: "center",
+              backgroundColor: "white",
+              padding: 16,
               marginBottom: 12,
-            }}
-          >
-            Tämä tila herää eloon, kun joku aloittaa.
-          </Text>
-
-          <Text
-            style={{
-              fontSize: 14,
-              color: "#6b7280",
-              textAlign: "center",
-              marginBottom: 24,
-            }}
-          >
-            Ole ensimmäinen ja julkaise viesti naapurustolle.
-          </Text>
-
-          <Pressable
-            onPress={() => router.push("/(app)/create")}
-            style={{
-              backgroundColor: "#2563eb",
-              paddingHorizontal: 24,
-              paddingVertical: 14,
               borderRadius: 10,
             }}
           >
-            <Text
-              style={{
-                color: "white",
-                fontWeight: "600",
-                fontSize: 16,
-              }}
-            >
-              Julkaise ensimmäinen viesti
-            </Text>
-          </Pressable>
-        </View>
-      ) : (
-        <FlatList
-          data={posts}
-          extraData={commentRefreshKey}
-          keyExtractor={(item) => item.id.toString()}
-          onEndReached={loadMore}
-          onEndReachedThreshold={0.5}
-          refreshing={refreshing}
-          onRefresh={handleRefresh}
-          keyboardShouldPersistTaps="always"
-          contentContainerStyle={{ paddingBottom: 120 }}
-          ListFooterComponent={
-            loading ? <ActivityIndicator style={{ margin: 16 }} /> : null
-          }
-          renderItem={({ item }) => (
+            {item.pinned && (
+              <Text style={{ color: "#2563eb", fontWeight: "600" }}>
+                📌 Kiinnitetty
+              </Text>
+            )}
+
             <View
               style={{
-                backgroundColor: "white",
-                marginHorizontal: 16,
-                marginBottom: 16,
-                padding: 16,
-                borderRadius: 12,
-                shadowColor: "#000",
-                shadowOpacity: 0.05,
-                shadowRadius: 8,
-                elevation: 2,
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
               }}
             >
-              {/* OTSIKKO + ROSKAKORI */}
-              <View
-                style={{
-                  flexDirection: "row",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: 6,
-                }}
-              >
-                <Text style={{ fontSize: 16, fontWeight: "bold" }}>
-                  {item.title}
-                </Text>
-
-                {user?.userId === item.userId && (
-                  <Pressable
-                    onPress={() =>
-                      Alert.alert(
-                        "Poista pyyntö",
-                        "Haluatko varmasti poistaa tämän?",
-                        [
-                          { text: "Peruuta", style: "cancel" },
-                          {
-                            text: "Poista",
-                            style: "destructive",
-                            onPress: async () => {
-                              await deletePost(item.id);
-                              setPosts((prev) =>
-                                prev.filter((p) => p.id !== item.id),
-                              );
-                            },
-                          },
-                        ],
-                      )
-                    }
-                  >
-                    <Text style={{ fontSize: 16, color: "#dc2626" }}>🗑</Text>
-                  </Pressable>
-                )}
-              </View>
-
-              {/* SISÄLTÖ */}
-              <Text style={{ color: "#374151", marginBottom: 12 }}>
-                {item.body}
+              <Text style={{ fontSize: 16, marginBottom: 6, flex: 1 }}>
+                {item.content}
               </Text>
 
-              {/* META */}
-              <View
-                style={{
-                  flexDirection: "row",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: 8,
-                }}
-              >
-                <Text style={{ fontSize: 12, color: "#6b7280" }}>
-                  {item.user.firstName} · {timeAgo(item.createdAt)}
-                </Text>
+              {user?.role === "ADMIN" && (
+                <Pressable
+                  onPress={() => deletePost(item.id)}
+                  style={{ marginLeft: 8 }}
+                >
+                  <Text style={{ color: "#dc2626", fontSize: 16 }}>🗑</Text>
+                </Pressable>
+              )}
+            </View>
 
+            <Text style={{ fontSize: 12, color: "#6b7280", marginBottom: 8 }}>
+              {item.author?.name ?? "Unknown"} · {item.comments?.length ?? 0}{" "}
+              kommenttia
+            </Text>
+
+            {item.commentsLoading ? (
+              <ActivityIndicator />
+            ) : (
+              (item.comments ?? []).map((c: any) => (
                 <View
+                  key={c.id}
                   style={{
-                    backgroundColor:
-                      item.type === "offer" ? "#dcfce7" : "#e0f2fe",
-                    paddingHorizontal: 10,
-                    paddingVertical: 4,
-                    borderRadius: 999,
+                    marginBottom: 6,
+                    flexDirection: "row",
+                    justifyContent: "space-between",
+                    alignItems: "flex-start",
                   }}
                 >
-                  <Text
-                    style={{
-                      fontSize: 12,
-                      color: item.type === "offer" ? "#166534" : "#075985",
-                      fontWeight: "600",
-                    }}
-                  >
-                    {item.type === "offer" ? "Tarjous" : "Pyyntö"}
-                  </Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontWeight: "600", fontSize: 13 }}>
+                      {c.author?.name}
+                    </Text>
+                    <Text style={{ fontSize: 13 }}>{c.content}</Text>
+                  </View>
+
+                  {/* 🗑 ROSKAKORI */}
+                  {(user?.role === "ADMIN" || user?.id === c.authorId) && (
+                    <Pressable
+                      onPress={() => confirmDelete(c.id, item.id)}
+                      style={{
+                        marginLeft: 8,
+                        paddingHorizontal: 6,
+                        paddingVertical: 4,
+                      }}
+                    >
+                      <Text style={{ fontSize: 16, color: "#dc2626" }}>🗑</Text>
+                    </Pressable>
+                  )}
                 </View>
-              </View>
+              ))
+            )}
 
-              {/* 💬 KOMMENTIT */}
-              <CommentList
-                key={`${item.id}-${commentRefreshKey[item.id] ?? 0}`}
-                postId={item.id}
-                refreshKey={commentRefreshKey[item.id]}
-                onDeleted={() => {
-                  setCommentRefreshKey((prev) => ({
-                    ...prev,
-                    [item.id]: (prev[item.id] ?? 0) + 1,
-                  }));
+            <View style={{ flexDirection: "row", marginTop: 8 }}>
+              <TextInput
+                value={item.newComment}
+                onChangeText={(text) =>
+                  setPosts((prev) =>
+                    prev.map((p) =>
+                      p.id === item.id ? { ...p, newComment: text } : p,
+                    ),
+                  )
+                }
+                placeholder="Kommentoi..."
+                style={{
+                  flex: 1,
+                  borderWidth: 1,
+                  borderColor: "#e5e7eb",
+                  borderRadius: 8,
+                  padding: 8,
                 }}
               />
 
-              {/* ✍️ KIRJOITA KOMMENTTI */}
-              <CommentInput
-                onSubmit={async (text) => {
-                  try {
-                    await createComment(item.id, text);
-
-                    setCommentRefreshKey((prev) => ({
-                      ...prev,
-                      [item.id]: (prev[item.id] ?? 0) + 1,
-                    }));
-                  } catch {
-                    Alert.alert("Virhe", "Kommentin lähetys epäonnistui");
-                  }
+              <Pressable
+                onPress={() => addComment(item.id)}
+                style={{
+                  marginLeft: 8,
+                  backgroundColor: "#2563eb",
+                  paddingHorizontal: 12,
+                  justifyContent: "center",
+                  borderRadius: 8,
                 }}
-              />
+              >
+                <Text style={{ color: "white" }}>Lähetä</Text>
+              </Pressable>
             </View>
-          )}
-        />
-      )}
+          </View>
+        )}
+      />
     </View>
   );
 }
